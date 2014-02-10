@@ -1,5 +1,8 @@
 module Fluent
     class KinesisOutput < Fluent::BufferedOutput
+        include Fluent::SetTimeKeyMixin
+        include Fluent::SetTagKeyMixin
+
         Fluent::Plugin.register_output('kinesis',self)
 
         def initialize
@@ -9,6 +12,9 @@ module Fluent
             require 'json'
             require 'logger'
         end
+
+        config_set_default :include_time_key, true
+        config_set_default :include_tag_key,  true
 
         config_param :aws_key_id,   :string, :default => nil
         config_param :aws_sec_key,  :string, :default => nil
@@ -22,9 +28,7 @@ module Fluent
 
         config_param :sequence_number_for_ordering, :string, :default => nil
 
-        config_param :include_tag,  :bool, :default => true
-        config_param :include_time, :bool, :default => true
-        config_param :debug,        :bool, :default => false
+        config_param :debug, :bool, :default => false
 
         def configure(conf)
             super
@@ -60,9 +64,6 @@ module Fluent
         end
 
         def format(tag, time, record)
-            record['__tag'] = tag if @include_tag
-            record['__time'] = time if @include_time
-
             # XXX: The maximum size of the data blob is 50 kilobytes
             # http://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecord.html
             data = {
@@ -79,14 +80,12 @@ module Fluent
                 data[:sequence_number_for_ordering] = @sequence_number_for_ordering
             end
 
-            pack_data(data)
+            data.to_msgpack
         end
 
         def write(chunk)
-            buf = chunk.read
-
-            while (data = unpack_data(buf))
-                AWS.kinesis.client.put_record(data)
+            chunk.msgpack_each do |data|
+                @client.put_record(data)
             end
         end
 
@@ -123,29 +122,8 @@ module Fluent
             value.to_s
         end
 
-        def pack_data(data)
-            data = data.to_msgpack(data)
-            force_encoding(data,'ascii-8bit')
-            [data.length].pack('L') + data
-        end
-
-        def unpack_data(buf)
-            return nil if buf.empty?
-
-            force_encoding(buf,'ascii-8bit')
-            length = buf.slice!(0,4).unpack('L').first
-            data = buf.slice!(0,length)
-            MessagePack.unpack(data)
-        end
-
         def encode64(str)
             Base64.encode64(str).delete("\n")
-        end
-
-        def force_encoding(str, encoding)
-            if str.respond_to?(:force_encoding)
-                str.force_encoding(encoding)
-            end
         end
     end
 end
